@@ -1,19 +1,28 @@
-from fastapi import FastAPI
+from datetime import date, datetime
+
+from fastapi import FastAPI, Depends, HTTPException, status
 from pydantic import BaseModel
+
 from database import engine, Base, SessionLocal
 from models.user import User
 from models.trip import Trip
-from security import hash_password, verify_password
-from auth import create_access_token
 from models.destination import Destination
 from models.place import Place
 from models.trip_place import TripPlace
 
+from security import hash_password, verify_password
+from auth import create_access_token
+from core.dependencies import get_current_user
 
-app = FastAPI(title="TripWise")
+
+app = FastAPI(title="Tripoholic")
 
 Base.metadata.create_all(bind=engine)
 
+
+# ============================================================
+# REQUEST MODELS
+# ============================================================
 
 class RegisterRequest(BaseModel):
     name: str
@@ -21,10 +30,56 @@ class RegisterRequest(BaseModel):
     password: str
 
 
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+
+class TripCreateRequest(BaseModel):
+    name: str
+    description: str | None = None
+    start_date: date | None = None
+    end_date: date | None = None
+
+
+class DestinationCreateRequest(BaseModel):
+    trip_id: int
+    name: str
+    location: str | None = None
+    latitude: float | None = None
+    longitude: float | None = None
+    arrival_date: date | None = None
+    departure_date: date | None = None
+    order_index: int = 0
+    notes: str | None = None
+
+
+class TripPlaceCreateRequest(BaseModel):
+    trip_id: int
+    place_id: int
+    planned_date: datetime | None = None
+    visit_status: str = "planned"
+    personal_notes: str | None = None
+
+
+class PlaceCreateRequest(BaseModel):
+    name: str
+    category: str | None = None
+    address: str | None = None
+    latitude: float | None = None
+    longitude: float | None = None
+    description: str | None = None
+    source: str = "user"
+
+
+# ============================================================
+# BASIC ROUTES
+# ============================================================
+
 @app.get("/")
 def home():
     return {
-        "message": "Welcome to TripWise!"
+        "message": "Welcome to Tripoholic!"
     }
 
 
@@ -34,8 +89,9 @@ def test_database():
         with engine.connect():
             return {
                 "status": "success",
-                "message": "TripWise connected to MySQL successfully!"
+                "message": "Tripoholic connected to MySQL successfully!"
             }
+
     except Exception as e:
         return {
             "status": "error",
@@ -43,12 +99,26 @@ def test_database():
         }
 
 
+# ============================================================
+# AUTHENTICATION
+# ============================================================
+
 @app.post("/register")
 def register_user(user_data: RegisterRequest):
 
     db = SessionLocal()
 
     try:
+        existing_user = db.query(User).filter(
+            User.email == user_data.email
+        ).first()
+
+        if existing_user:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Email is already registered"
+            )
+
         hashed_password = hash_password(user_data.password)
 
         new_user = User(
@@ -69,9 +139,6 @@ def register_user(user_data: RegisterRequest):
 
     finally:
         db.close()
-class LoginRequest(BaseModel):
-    email: str
-    password: str
 
 
 @app.post("/login")
@@ -85,19 +152,19 @@ def login_user(login_data: LoginRequest):
         ).first()
 
         if not user:
-            return {
-                "status": "error",
-                "message": "Invalid email or password"
-            }
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid email or password"
+            )
 
         if not verify_password(
             login_data.password,
             user.password_hash
         ):
-            return {
-                "status": "error",
-                "message": "Invalid email or password"
-            }
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid email or password"
+            )
 
         access_token = create_access_token(user.id)
 
@@ -113,21 +180,22 @@ def login_user(login_data: LoginRequest):
     finally:
         db.close()
 
-class TripCreateRequest(BaseModel):
-    name: str
-    description: str | None = None
-    start_date: str | None = None
-    end_date: str | None = None
 
+# ============================================================
+# TRIPS
+# ============================================================
 
 @app.post("/trips")
-def create_trip(trip_data: TripCreateRequest):
+def create_trip(
+    trip_data: TripCreateRequest,
+    current_user: User = Depends(get_current_user)
+):
 
     db = SessionLocal()
 
     try:
         new_trip = Trip(
-            user_id=1,
+            user_id=current_user.id,
             name=trip_data.name,
             description=trip_data.description,
             start_date=trip_data.start_date,
@@ -148,24 +216,31 @@ def create_trip(trip_data: TripCreateRequest):
     finally:
         db.close()
 
-class DestinationCreateRequest(BaseModel):
-    trip_id: int
-    name: str
-    location: str | None = None
-    latitude: float | None = None
-    longitude: float | None = None
-    arrival_date: str | None = None
-    departure_date: str | None = None
-    order_index: int = 0
-    notes: str | None = None
 
+# ============================================================
+# DESTINATIONS
+# ============================================================
 
 @app.post("/destinations")
-def create_destination(data: DestinationCreateRequest):
+def create_destination(
+    data: DestinationCreateRequest,
+    current_user: User = Depends(get_current_user)
+):
 
     db = SessionLocal()
 
     try:
+        trip = db.query(Trip).filter(
+            Trip.id == data.trip_id,
+            Trip.user_id == current_user.id
+        ).first()
+
+        if not trip:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Trip not found or access denied"
+            )
+
         destination = Destination(
             trip_id=data.trip_id,
             name=data.name,
@@ -191,20 +266,93 @@ def create_destination(data: DestinationCreateRequest):
     finally:
         db.close()
 
-class TripPlaceCreateRequest(BaseModel):
-    trip_id: int
-    place_id: int
-    planned_date: str | None = None
-    visit_status: str = "planned"
-    personal_notes: str | None = None
 
+# ============================================================
+# PLACES
+# ============================================================
 
-@app.post("/trip-places")
-def add_place_to_trip(data: TripPlaceCreateRequest):
+@app.post("/places")
+def create_place(
+    data: PlaceCreateRequest,
+    current_user: User = Depends(get_current_user)
+):
 
     db = SessionLocal()
 
     try:
+        place = Place(
+            name=data.name,
+            category=data.category,
+            address=data.address,
+            latitude=data.latitude,
+            longitude=data.longitude,
+            description=data.description,
+            source=data.source,
+            created_by_user_id=current_user.id
+        )
+
+        db.add(place)
+        db.commit()
+        db.refresh(place)
+
+        return {
+            "status": "success",
+            "message": "Place created successfully!",
+            "place_id": place.id
+        }
+
+    finally:
+        db.close()
+
+
+# ============================================================
+# ADD PLACE TO TRIP
+# ============================================================
+
+@app.post("/trip-places")
+def add_place_to_trip(
+    data: TripPlaceCreateRequest,
+    current_user: User = Depends(get_current_user)
+):
+
+    db = SessionLocal()
+
+    try:
+        # Check that the trip belongs to the logged-in user
+        trip = db.query(Trip).filter(
+            Trip.id == data.trip_id,
+            Trip.user_id == current_user.id
+        ).first()
+
+        if not trip:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Trip not found or access denied"
+            )
+
+        # Check that the place exists
+        place = db.query(Place).filter(
+            Place.id == data.place_id
+        ).first()
+
+        if not place:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Place not found"
+            )
+
+        # Prevent duplicate place entries in the same trip
+        existing_trip_place = db.query(TripPlace).filter(
+            TripPlace.trip_id == data.trip_id,
+            TripPlace.place_id == data.place_id
+        ).first()
+
+        if existing_trip_place:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Place is already added to this trip"
+            )
+
         trip_place = TripPlace(
             trip_id=data.trip_id,
             place_id=data.place_id,
@@ -221,45 +369,6 @@ def add_place_to_trip(data: TripPlaceCreateRequest):
             "status": "success",
             "message": "Place added to trip successfully!",
             "trip_place_id": trip_place.id
-        }
-
-    finally:
-        db.close()
-
-class PlaceCreateRequest(BaseModel):
-    name: str
-    category: str | None = None
-    address: str | None = None
-    latitude: float | None = None
-    longitude: float | None = None
-    description: str | None = None
-    source: str = "user"
-
-
-@app.post("/places")
-def create_place(data: PlaceCreateRequest):
-
-    db = SessionLocal()
-
-    try:
-        place = Place(
-            name=data.name,
-            category=data.category,
-            address=data.address,
-            latitude=data.latitude,
-            longitude=data.longitude,
-            description=data.description,
-            source=data.source
-        )
-
-        db.add(place)
-        db.commit()
-        db.refresh(place)
-
-        return {
-            "status": "success",
-            "message": "Place created successfully!",
-            "place_id": place.id
         }
 
     finally:

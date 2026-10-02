@@ -1,6 +1,6 @@
 from datetime import date, datetime
 
-from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi import FastAPI, Depends, HTTPException, status, Query
 from pydantic import BaseModel
 
 from database import engine, Base, SessionLocal
@@ -13,6 +13,7 @@ from models.trip_place import TripPlace
 from security import hash_password, verify_password
 from auth import create_access_token
 from core.dependencies import get_current_user
+from services.place_service import search_india_places
 
 
 app = FastAPI(title="Tripoholic")
@@ -304,6 +305,35 @@ def create_place(
     finally:
         db.close()
 
+# ============================================================
+# INDIA-WIDE PLACE SEARCH
+# ============================================================
+
+@app.get("/places/search")
+async def search_places_endpoint(
+    q: str = Query(..., min_length=2, max_length=200),
+    limit: int = Query(10, ge=1, le=20),
+    current_user: User = Depends(get_current_user)
+):
+    try:
+        places = await search_india_places(
+            query=q,
+            limit=limit
+        )
+
+        return {
+            "status": "success",
+            "country": "India",
+            "query": q,
+            "count": len(places),
+            "places": places
+        }
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=502,
+            detail="Place search service is temporarily unavailable"
+        )
 
 # ============================================================
 # ADD PLACE TO TRIP

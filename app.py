@@ -373,3 +373,151 @@ def add_place_to_trip(
 
     finally:
         db.close()
+
+# ============================================================
+# TRIP MANAGEMENT
+# ============================================================
+
+class TripUpdateRequest(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    start_date: date | None = None
+    end_date: date | None = None
+    status: str | None = None
+
+
+@app.get("/trips")
+def get_my_trips(
+    current_user: User = Depends(get_current_user)
+):
+    db = SessionLocal()
+
+    try:
+        trips = db.query(Trip).filter(
+            Trip.user_id == current_user.id
+        ).order_by(Trip.created_at.desc()).all()
+
+        return {
+            "status": "success",
+            "count": len(trips),
+            "trips": [
+                {
+                    "id": trip.id,
+                    "name": trip.name,
+                    "description": trip.description,
+                    "start_date": trip.start_date,
+                    "end_date": trip.end_date,
+                    "status": trip.status,
+                    "created_at": trip.created_at
+                }
+                for trip in trips
+            ]
+        }
+
+    finally:
+        db.close()
+
+
+@app.get("/trips/{trip_id}")
+def get_trip(
+    trip_id: int,
+    current_user: User = Depends(get_current_user)
+):
+    db = SessionLocal()
+
+    try:
+        trip = db.query(Trip).filter(
+            Trip.id == trip_id,
+            Trip.user_id == current_user.id
+        ).first()
+
+        if not trip:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Trip not found or access denied"
+            )
+
+        return {
+            "status": "success",
+            "trip": {
+                "id": trip.id,
+                "name": trip.name,
+                "description": trip.description,
+                "start_date": trip.start_date,
+                "end_date": trip.end_date,
+                "status": trip.status,
+                "created_at": trip.created_at
+            }
+        }
+
+    finally:
+        db.close()
+
+
+@app.put("/trips/{trip_id}")
+def update_trip(
+    trip_id: int,
+    trip_data: TripUpdateRequest,
+    current_user: User = Depends(get_current_user)
+):
+    db = SessionLocal()
+
+    try:
+        trip = db.query(Trip).filter(
+            Trip.id == trip_id,
+            Trip.user_id == current_user.id
+        ).first()
+
+        if not trip:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Trip not found or access denied"
+            )
+
+        update_data = trip_data.model_dump(exclude_unset=True)
+
+        for field, value in update_data.items():
+            setattr(trip, field, value)
+
+        db.commit()
+        db.refresh(trip)
+
+        return {
+            "status": "success",
+            "message": "Trip updated successfully!",
+            "trip_id": trip.id
+        }
+
+    finally:
+        db.close()
+
+
+@app.delete("/trips/{trip_id}")
+def delete_trip(
+    trip_id: int,
+    current_user: User = Depends(get_current_user)
+):
+    db = SessionLocal()
+
+    try:
+        trip = db.query(Trip).filter(
+            Trip.id == trip_id,
+            Trip.user_id == current_user.id
+        ).first()
+
+        if not trip:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Trip not found or access denied"
+            )
+
+        db.delete(trip)
+        db.commit()
+
+        return {
+            "status": "success",
+            "message": "Trip deleted successfully!"
+        }
+
+    finally:
+        db.close()
